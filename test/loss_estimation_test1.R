@@ -469,13 +469,6 @@ wb = getLossWorldBankData() %>%
 lossFoodGroup = getLossFoodGroup()
 lossRegionClass = getLossRegionClass()
 
-## Assume the national FBS data are official
-## nationalFbs[, flagObservationStatus_measuredElement_5120 := ""]
-## nationalFbs[, flagMethod_measuredElement_5120 := "-"]
-## nationalFbs[, source := "national"]
-## loss[, source := "sws"]
-
-## finalLoss = rbind(loss, nationalFbs[, colnames(loss), with = FALSE], fill = TRUE)
 finalLoss = copy(loss)
 
 modelData =
@@ -498,12 +491,6 @@ modelData[, duplicateValue := duplicated(loss),
           by = c("geographicAreaM49", "measuredItemCPC")]
 modelData = modelData[!(variance == 0 & duplicateValue), ]
 
-## The loss reported by the national FBS of Italy and Spain is higher
-## than it's production. Maybe add them back in when we have the
-## trade.
-## modelData =
-##     modelData[!(geographicAreaM49 c("Italy", "Spain") & source == "national"), ]
-
 countryTable =
     GetCodeList(domain = "agriculture",
                 dataset = "agriculture",
@@ -520,23 +507,22 @@ finalModelData[, `:=`(c("duplicateValue", "variance", "temperature",
                         grep("flag", colnames(finalModelData), value = TRUE)),
                       NULL)]
 
-
+## Convert keys to factor
 finalModelData[, `:=`(c("measuredItemCPC", "foodGroupName", 
                    "foodPerishableGroup", "lossRegionClass", "geographicAreaM49",
                    "geographicAreaM49Name"),
                  lapply(c("measuredItemCPC", "foodGroupName", 
                           "foodPerishableGroup", "lossRegionClass",
                           "geographicAreaM49", "geographicAreaM49Name"),
-                        FUN = function(x) as.factor(.SD[[x]])
+                        FUN = function(x) as.factor(get(x))
                         )
                  )
           ]
 
-
+## Remove zero production
 finalModelData = finalModelData[production != 0, ]
 
 ## Just a test
-## finalModelData = finalModelData[source == "sws", ]
 
 trainIndex = sample(NROW(finalModelData), NROW(finalModelData) * 0.75)
 finalTrainData =
@@ -545,6 +531,7 @@ finalTrainData =
 finalTestData =
     finalModelData[-trainIndex, ]
 
+## Exploratory plots
 xyplot(log(loss) ~ log(production)|geographicAreaM49Name,
        data = finalModelData,
        type = c("p", "r"))
@@ -570,101 +557,34 @@ xyplot(log(loss) ~ sharePavedRoad|geographicAreaM49Name,
 
 
 
-## lmData = copy(finalTrainData)
+## Temporary model (without trade)
+## ---------------------------------------------------------------------
 
-## NOTE (Michael): I would not add in the square term of production
-##                 for lm, but it may be fine for lme beacuse of the
-##                 constraint.
-
+## The linear regression model
 ## Import is excluded here in the model as there are no data
 lossLmModel =
     lm(log(loss) ~ log(production + 1) + 
            timePointYears + foodGroupName:geographicAreaM49Name,
     data = finalTrainData)
 
-## lossLmModel =
-##     lm(log(loss) ~ log(production + 1) + 
-##            timePointYears + foodPerishableGroup:lossRegionClass,
-##     data = lmData)
-
 summary(lossLmModel)
 
 
-
-
-## lmeData =
-##     finalTrainData[, list(geographicAreaM49, geographicAreaM49Name,
-##                        timePointYears, measuredItemCPC, production, gdpPerCapita,
-##                        sharePavedRoad, foodPerishableGroup, foodGroupName,
-##                        import, lossRegionClass, loss)]
-
-## lossLmeModel =
-##     lmer(log(loss) ~ timePointYears + 
-##          ## (log(production + 1)|geographicAreaM49Name:foodPerishableGroup),
-##          (log(production + 1) + I(log(production + 1)^2)|geographicAreaM49Name:foodPerishableGroup),
-##          ## (-1 + log(production + 1)|geographicAreaM49Name:foodGroupName),
-##          data = lmeData)
-
-
-## lossLmeModel =
-##     lmer(log(loss) ~ timePointYears + log(production + 1) + 
-##          (log(production + 1)|geographicAreaM49Name) +
-##          (1|lossRegionClass) +
-##          foodPerishableGroup,
-##          data = lmeData)
-
-
-## lossLmeModel =
-##     lmer(log(loss) ~ timePointYears + log(production + 1) + 
-##              (log(production + 1)|lossRegionClass/geographicAreaM49Name) +
-##              (log(production + 1)|foodPerishableGroup/foodGroupName),
-##          data = lmeData)
-
-
-system.time({
-    lossLmeModelOld =
-        lmer(log(loss) ~ -1 + timePointYears + log(production + 1) + 
-                 (log(production + 1)|lossRegionClass/lossRegionClass:foodPerishableGroup/lossRegionClass:foodGroupName/lossRegionClass:measuredItemCPC),
-             data = finalTrainData)
-})
-
+## The linear mixed model
 
 ## This is the current model
 system.time({
     lossLmeModel =
-        lmer(log(loss) ~ timePointYears + log(production + 1) + 
-                 (-1 + log(production + 1)|foodPerishableGroup/foodGroupName/measuredItemCPC/geographicAreaM49Name),
+        lmer(log(loss) ~ timePointYears + log(production) + 
+                 (-1 + log(production)|foodPerishableGroup/foodGroupName/measuredItemCPC/geographicAreaM49Name),
              data = finalTrainData)
 })
-
-
-system.time({
-    lossLmeModel =
-        lmer(log(loss) ~ -1 + timePointYears + log(production + 1) + 
-                 (log(production + 1)|lossRegionClass/geographicAreaM49Name/geographicAreaM49Name:foodPerishableGroup/geographicAreaM49Name:foodGroupName/measuredItemCPC/measuredItemCPC:lossRegionClass),
-             data = finalTrainData)
-})
-
-histogram(~loss|foodPerishableGroup * lossRegionClass, data = finalTrainData,
-          breaks = 100)
-
 
 
 test = finalTrainData[, list(lloss = log(loss), foodGroupName, foodPerishableGroup,
                            lossRegionClass, geographicAreaM49, measuredItemCPC,
                            interact = factor(as.numeric(geographicAreaM49) *
                                as.numeric(measuredItemCPC)))]
-
-
-for(i in colnames(test)[-1]){
-    print(i)
-    print(sum(test[, sum((lloss - mean(lloss, na.rm = TRUE))^2), by = i]$V1))
-}
-
-by(test[["lloss"]], test[["foodGroupName"]], mean, na.rm = TRUE)
-
-
-
 
 summary(lossLmeModel)
 
@@ -692,16 +612,24 @@ abline(a = 0, b = 1, col = "red", lty = 2)
 1 - with(finalTrainData, sum((log(predictedLME) - log(loss))^2))/
     with(finalTrainData, sum((log(loss) - mean(log(loss)))^2))
 
+## Plot the random effects
+##
+## NOTE (Michael): The order make sense, with animal products with the
+##                 lowest loss rate followed by non perishable and no
+##                 difference between fruits and semi perishable.
 randomEffect = ranef(lossLmeModel, condVar = TRUE)
 dotplot(randomEffect)[[4]]
 
 
-
-with(lmData, plot(loss, predicted, xlim = c(0, exp(15)), ylim = c(0, exp(15))))
+## Plot the fit on the original scale
+with(finalTrainData,
+     plot(loss, predictedLM, xlim = c(0, exp(15)), ylim = c(0, exp(15))))
 abline(a = 0, b = 1, col = "red", lty = 2)
-with(lmeData, plot(loss, predicted, xlim = c(0, exp(15)), ylim = c(0, exp(15))))
+with(finalTrainData,
+     plot(loss, predictedLME, xlim = c(0, exp(15)), ylim = c(0, exp(15))))
 abline(a = 0, b = 1, col = "red", lty = 2)
 
+## Predict out of sample
 lmNewLevelPredict = function(model, row){
     tmp = predict(model, newdata = row)
     if(inherits(tmp, "try-error")){
@@ -709,16 +637,6 @@ lmNewLevelPredict = function(model, row){
     }
     tmp
 }
-
-
-
-## lmeNewLevelPredict = function(model, row){
-##     tmp = predict(model, newdata = row, allow.new.levels = TRUE)
-##     if(inherits(tmp, "try-error")){
-##         tmp = NA
-##     }
-##     tmp
-## }
 
 for(i in 1:NROW(finalTestData)){
     finalTestData[i, predictedLM :=
@@ -729,12 +647,6 @@ finalTestData[production!= 0, predictedLM := exp(predict(lossLmModel, .SD))]
 with(finalTestData, plot(log(loss), log(predictedLM), xlim = c(0, 15),
                          ylim = c(0, 15)))
 abline(a = 0, b = 1, col = "red", lty = 2)
-
-
-## for(i in 1:NROW(finalTestData)){
-##     finalTestData[i, predictedLME :=
-##                       exp(lmeNewLevelPredict(lossLmeModel, row = .SD))]
-## }
 
 finalTestData[production != 0, predictedLME :=
                   exp(predict(lossLmeModel, .SD, , allow.new.levels = TRUE))]
@@ -752,11 +664,12 @@ with(finalTestData, plot(loss, predictedLME, xlim = c(0, exp(15)),
 abline(a = 0, b = 1, col = "red", lty = 2)
 
 
-xyplot(fitted(lossLmeModel) ~ log(loss)|geographicAreaM49Name, data = lmeData)
 
 
+## Final Model (when trade is completed)
+## ---------------------------------------------------------------------
 
-## A model just for 2010
+## A model just for 2010, this is the final model when we have trade data
 
 finalModelData2010 = finalModelData[timePointYears == 2010, ]
 ## finalModelData2010 =
@@ -770,21 +683,21 @@ lossLmModel =
     data = lmData)
 summary(lossLmModel)
 
-lmData$predicted = exp(predict(lossLmModel, lmData))
+lmData[, predicted := exp(predict(lossLmModel, lmData))]
 with(lmData, plot(log(loss), log(predicted), xlim = c(0, 15), ylim = c(0, 15)))
 abline(a = 0, b = 1, col = "red", lty = 2)
 
-library(lme4)
+
 lmeData =
     finalModelData2010[production != 0, list(geographicAreaM49,
                            geographicAreaM49Name, import, lossRegionClass,
                        timePointYears, measuredItemCPC, production, gdpPerCapita,
                        sharePavedRoad, foodPerishableGroup, foodGroupName, loss)]
 
-
+## Can not be estimated because we don't have enough data.
 lossLmeModel =
-    lmer(log(loss) ~ -1 + timePointYears + import + log(production + 1) +
-         (log(production + 1) | geographicAreaM49Name:foodPerishableGroup), 
+    lmer(log(loss) ~ timePointYears + log(import) + log(production) + 
+         (-1 + log(production)|foodPerishableGroup/foodGroupName/measuredItemCPC/geographicAreaM49Name),
          data = lmeData)
 
 summary(lossLmeModel)
@@ -794,9 +707,7 @@ with(lmeData, plot(log(loss), log(predicted), xlim = c(0, 15), ylim = c(0, 15)))
 abline(a = 0, b = 1, col = "red", lty = 2)
 
 randomEffect = ranef(lossLmeModel, condVar = TRUE)
-randomEffect$geographicAreaM49Name$`log(production)` =
-    exp(randomEffect$geographicAreaM49Name$`log(production)`)
-dotplot(randomEffect, scales = list(x = list(relation = "free")))
+
 
 
 
